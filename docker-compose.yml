@@ -19,4 +19,4 @@ services:
 
 networks:
   mynet:
-    driver:  bridge
+    driver: bridge 
