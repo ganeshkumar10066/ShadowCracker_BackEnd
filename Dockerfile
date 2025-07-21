@@ -11,7 +11,7 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 
 # Install dependencies
-RUN npm install
+RUN npm install --only=production && npm cache clean --force && npm install pm2 -g
 
 # Copy application code
 COPY . .
@@ -37,4 +37,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3001/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
 
 # Start the application
-CMD ["npm", "start"] 
+CMD ["pm2-runtime", "start", "app.js"] 
