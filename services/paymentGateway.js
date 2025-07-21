@@ -14,99 +14,46 @@ class PaymentGateway {
     }
 
     /**
-     * Validate payment request parameters according to API documentation
-     * @param {Object} data - Payment request data
-     * @returns {Object} Validation result
+     * Handle payment gateway request errors
+     * @param {Error} error - Error object
+     * @returns {Error} Formatted error
      */
-    validatePaymentData(data) {
-        const errors = [];
-
-        // Required fields with their types
-        const requiredFields = {
-            mch_id: { type: 'string', required: true },
-            mch_order_no: { type: 'string', required: true },
-            notifyUrl: { type: 'string', required: true, maxLength: 200 },
-            page_url: { type: 'string', required: true, maxLength: 200 },
-            trade_amount: { type: 'number', required: true },
-            currency: { type: 'string', required: true },
-            pay_type: { type: 'string', required: true },
-            payer_phone: { type: 'number', required: true },
-            attach: { type: 'string', required: true, maxLength: 200 }
-        };
-
-        // Validate each field
-        for (const [field, rules] of Object.entries(requiredFields)) {
-            const value = data[field];
-
-            // Check if required field is present
-            if (rules.required && (value === undefined || value === null || value === '')) {
-                errors.push(`${field} is required`);
-                continue;
-            }
-
-            // Skip validation if value is not present and not required
-            if (!rules.required && (value === undefined || value === null)) {
-                continue;
-            }
-
-            // Type validation
-            if (rules.type === 'number') {
-                if (typeof value !== 'number' && isNaN(Number(value))) {
-                    errors.push(`${field} must be a number`);
-                }
-            } else if (rules.type === 'string') {
-                if (typeof value !== 'string') {
-                    errors.push(`${field} must be a string`);
-                }
-                // Length validation for strings
-                if (rules.maxLength && value.length > rules.maxLength) {
-                    errors.push(`${field} must not exceed ${rules.maxLength} bytes`);
-                }
-            }
+    handleRequestError(error) {
+        // Handle Axios-specific errors
+        if (error.response) {
+            // The request was made and the server responded with a status code
+            // that falls out of the range of 2xx
+            const { status, data } = error.response;
+            const message = data?.msg || `Request failed with status code ${status}`;
+            const customError = new Error(message);
+            customError.statusCode = status;
+            customError.isGatewayError = true;
+            return customError;
+        } else if (error.request) {
+            // The request was made but no response was received
+            const customError = new Error('No response from payment gateway. It might be down or unreachable.');
+            customError.code = error.code; // e.g., 'ECONNRESET'
+            customError.isGatewayError = true;
+            return customError;
         }
 
-        return {
-            isValid: errors.length === 0,
-            errors
-        };
-    }
-
-    /**
-     * Generate signature following API documentation
-     * @param {Object} data - Request data
-     * @returns {string} MD5 signature in lowercase
-     */
-    generateSignature(data) {
-        try {
-            // Create a copy of data
-            const signData = { ...data };
-            
-            // Remove sign and sign_type as per documentation
-            delete signData.sign;
-            delete signData.sign_type;
-
-            // Sort by ASCII code
-            const sortedKeys = Object.keys(signData).sort();
-            
-            // Build signature string
-            let concatenatedString = '';
-            for (const key of sortedKeys) {
-                const value = signData[key];
-                // Skip null, empty values, sign and sign_type
-                if (value !== null && value !== '' && key !== 'sign' && key !== 'sign_type') {
-                    concatenatedString += `${key}=${value}&`;
-                }
-            }
-            
-            // Remove trailing & and add private key
-            concatenatedString = concatenatedString.slice(0, -1) + `&key=${this.privateKey}`;
-            
-            // Generate MD5 hash in lowercase
-            return md5(concatenatedString).toLowerCase();
-        } catch (error) {
-            console.error('Error generating signature:', error);
-            throw new Error('Failed to generate signature');
+        // Handle standard network errors
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            const customError = new Error('Unable to connect to payment gateway.');
+            customError.code = error.code;
+            customError.isGatewayError = true;
+            return customError;
         }
+        if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+            const customError = new Error('Payment gateway request timed out.');
+            customError.code = error.code;
+            customError.isGatewayError = true;
+            return customError;
+        }
+
+        // Fallback for other types of errors
+        error.isGatewayError = true;
+        return error;
     }
 
     /**
@@ -116,21 +63,81 @@ class PaymentGateway {
      * @returns {Promise<Object>} Response data
      */
     async sendRequest(path, data) {
+        // Internal validation helper
+        const validatePaymentData = (data) => {
+            const errors = [];
+            const requiredFields = {
+                mch_id: { type: 'string', required: true },
+                mch_order_no: { type: 'string', required: true },
+                notifyUrl: { type: 'string', required: false, maxLength: 200 },
+                page_url: { type: 'string', required: false, maxLength: 200 },
+                trade_amount: { type: 'number', required: false },
+                currency: { type: 'string', required: false },
+                pay_type: { type: 'string', required: false },
+                payer_phone: { type: 'number', required: false },
+                attach: { type: 'string', required: false, maxLength: 200 }
+            };
+            for (const [field, rules] of Object.entries(requiredFields)) {
+                const value = data[field];
+                if (rules.required && (value === undefined || value === null || value === '')) {
+                    errors.push(`${field} is required`);
+                    continue;
+                }
+                if (!rules.required && (value === undefined || value === null)) {
+                    continue;
+                }
+                if (rules.type === 'number') {
+                    if (typeof value !== 'number' && isNaN(Number(value))) {
+                        errors.push(`${field} must be a number`);
+                    }
+                } else if (rules.type === 'string') {
+                    if (typeof value !== 'string') {
+                        errors.push(`${field} must be a string`);
+                    }
+                    if (rules.maxLength && value.length > rules.maxLength) {
+                        errors.push(`${field} must not exceed ${rules.maxLength} bytes`);
+                    }
+                }
+            }
+            return {
+                isValid: errors.length === 0,
+                errors
+            };
+        };
+        // Internal signature helper
+        const generateSignature = (data) => {
+            try {
+                const signData = { ...data };
+                delete signData.sign;
+                delete signData.sign_type;
+                const sortedKeys = Object.keys(signData).sort();
+                let concatenatedString = '';
+                for (const key of sortedKeys) {
+                    const value = signData[key];
+                    if (value !== null && value !== '' && key !== 'sign' && key !== 'sign_type') {
+                        concatenatedString += `${key}=${value}&`;
+                    }
+                }
+                concatenatedString = concatenatedString.slice(0, -1) + `&key=${this.privateKey}`;
+                return md5(concatenatedString).toLowerCase();
+            } catch (error) {
+                console.error('Error generating signature:', error);
+                throw new Error('Failed to generate signature');
+            }
+        };
         try {
             // Validate request data
-            const validation = this.validatePaymentData(data);
+            const validation = validatePaymentData(data);
             if (!validation.isValid) {
                 throw new Error(`Invalid payment data: ${validation.errors.join(', ')}`);
             }
-
             // Generate signature and add to data
-            const sign = this.generateSignature(data);
+            const sign = generateSignature(data);
             const requestData = {
                 ...data,
                 sign,
                 sign_type: 'MD5'
             };
-
             // Convert to form data
             const formData = new URLSearchParams();
             Object.entries(requestData).forEach(([key, value]) => {
@@ -138,52 +145,37 @@ class PaymentGateway {
                     formData.append(key, String(value));
                 }
             });
-
             // Log request data for debugging
             console.log('Payment request:', {
                 url: `${this.baseUrl}${path}`,
                 data: Object.fromEntries(formData)
             });
-
-            // Send request with required headers
+            // Send request with browser-like headers
             const response = await axios.post(
                 `${this.baseUrl}${path}`,
                 formData.toString(),
                 {
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded'
-                    }
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                        'Origin': this.baseUrl,
+                        'Referer': `${this.baseUrl}/`
+                    },
+                    timeout: 10000 // 10 second timeout
                 }
             );
-
             // Log response for debugging
             console.log('Payment response:', response.data);
-
             // Validate response format
             if (!response.data || typeof response.data !== 'object') {
                 throw new Error('Invalid response format');
             }
-
             return response.data;
         } catch (error) {
             console.error('Payment gateway request error:', error);
             throw this.handleRequestError(error);
         }
-    }
-
-    /**
-     * Handle payment gateway request errors
-     * @param {Error} error - Error object
-     * @returns {Error} Formatted error
-     */
-    handleRequestError(error) {
-        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
-            return new Error('Unable to connect to payment gateway');
-        }
-        if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-            return new Error('Payment gateway request timed out');
-        }
-        return error;
     }
 
     /**
