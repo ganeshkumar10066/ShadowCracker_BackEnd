@@ -19,6 +19,9 @@ COPY . .
 # Create logs directory
 RUN mkdir -p logs
 
+# Change ownership of public and logs directories
+RUN chown -R nodejs:nodejs /app/public /app/logs
+
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
